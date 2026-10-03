@@ -89,7 +89,7 @@ jobs:
           echo "internal/crypto coverage: ${total}% (gate: 85%)"
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage.out
