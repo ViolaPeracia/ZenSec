@@ -46,10 +46,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Pinned to a current minor: older builds cannot read the export data of
-      # a recent Go toolchain and fail with a typechecking error.
+      # v6 rejects golangci-lint v2 outright; v9 supports it and runs on node24.
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
 

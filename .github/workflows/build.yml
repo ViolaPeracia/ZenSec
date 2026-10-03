@@ -47,12 +47,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # The linter binary must be able to read the export data of the Go
-      # toolchain. golangci-lint v2.1 fails against recent Go with
-      # "export data version 4 is greater than maximum supported version 2",
-      # so pin a current minor rather than a floating major.
+      # golangci-lint-action v6 refuses golangci-lint v2 outright ("invalid version
+      # string, golangci-lint v2 is not supported by golangci-lint-action v6").
+      # v9 documents `version: v2.x.y` and runs on node24, which also clears the
+      # Node 20 deprecation warning the older action triggered.
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.14.0
 
