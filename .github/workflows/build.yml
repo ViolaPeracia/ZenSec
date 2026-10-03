@@ -1,27 +1,95 @@
 name: Build and Test
 
+# Actions are pinned to major versions to match the existing repo style.
+# TODO: harden by pinning every action to a full commit SHA with an update bot.
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  pull_request: # no branch filter: every PR is verified, not just those into main
+
+# A newer push supersedes an in-flight run on the same ref; cancelling frees
+# runner minutes and stops a stale red result from blocking a green review.
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Least privilege: this workflow only ever reads the repository.
+    permissions:
+      contents: read
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.23'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0' # must match `go 1.25.0` in go.mod exactly
+          cache: true          # explicit module + build cache
 
-    - name: Tidy Dependencies
-      run: go mod tidy
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean (run 'gofmt -w .'):"
+            echo "$unformatted"
+            exit 1
+          fi
 
-    - name: Build
-      run: go build -v ./cmd/zensec/...
+      - name: Check dependency drift
+        run: |
+          go mod tidy
+          # A non-empty diff means go.mod/go.sum are not committed in sync with
+          # the imports, which silently pins CI to different deps than local.
+          git diff --exit-code go.mod go.sum
 
-    - name: Test
-      run: go test -v ./internal/crypto/...
+      - name: Vet
+        run: go vet ./...
+
+      # The linter binary must be able to read the export data of the Go
+      # toolchain. golangci-lint v2.1 fails against recent Go with
+      # "export data version 4 is greater than maximum supported version 2",
+      # so pin a current minor rather than a floating major.
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.14.0
+
+      # Needs no extra setup on ubuntu-latest: the action manages its own Go
+      # toolchain and database fetch. crypto/Go stdlib advisories are the point
+      # of this gate for a file-encryption tool.
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Test
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage gate (internal/crypto)
+        run: |
+          # The gate is scoped to internal/crypto, which is where the security
+          # properties live and which sits above the floor. rules.md asks for
+          # ~100% on this package; the remaining uncovered statements are
+          # failure paths that cannot be triggered without fault injection
+          # (crypto/rand errors, tmpfs full, aes.NewCipher rejection), so 85%
+          # is the enforceable floor today. Raise it as those paths get
+          # injectable seams.
+          # head -1 keeps the "mode: set" header; without it go tool cover
+          # rejects the sliced profile with "bad mode line".
+          { head -n 1 coverage.out; grep 'internal/crypto/' coverage.out; } > crypto-coverage.out
+          total="$(go tool cover -func=crypto-coverage.out \
+            | awk '/^total:/ { gsub(/%/, "", $3); print $3 }')"
+          if ! awk -v c="$total" -v t=85 'BEGIN { exit !(c + 0 >= t + 0) }'; then
+            echo "::error::internal/crypto coverage ${total}% is below the 85% gate"
+            exit 1
+          fi
+          echo "internal/crypto coverage: ${total}% (gate: 85%)"
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out

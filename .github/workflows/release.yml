@@ -1,46 +1,136 @@
 name: Release
 
+# Actions are pinned to major versions to match the existing repo style.
+# TODO: harden by pinning every action to a full commit SHA with an update bot.
 on:
   push:
     tags:
       - 'v*'
 
+# Never cancel a publish mid-flight, unlike build.yml.
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: false
+
 jobs:
-  release:
+  # Hard gate: a tag can only be released if the exact same checks build.yml
+  # enforces pass. Without this, a release could ship code that never passed
+  # vet/lint/tests, since the old release workflow built straight from the tag.
+  test:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25.0' # must match `go 1.25.0` in go.mod exactly
+          cache: true
 
-      - name: Build Windows
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean (run 'gofmt -w .'):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check dependency drift
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      # Pinned to a current minor: older builds cannot read the export data of
+      # a recent Go toolchain and fail with a typechecking error.
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.14.0
+
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Test
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage gate (internal/crypto)
+        run: |
+          # See build.yml: 85% is scoped to internal/crypto because cmd/zensec
+          # sits at 0% and would drag a global total down to 58.3%.
+          { head -n 1 coverage.out; grep 'internal/crypto/' coverage.out; } > crypto-coverage.out
+          total="$(go tool cover -func=crypto-coverage.out \
+            | awk '/^total:/ { gsub(/%/, "", $3); print $3 }')"
+          if ! awk -v c="$total" -v t=85 'BEGIN { exit !(c + 0 >= t + 0) }'; then
+            echo "::error::internal/crypto coverage ${total}% is below the 85% gate"
+            exit 1
+          fi
+          echo "internal/crypto coverage: ${total}% (gate: 85%)"
+
+  release:
+    needs: test # never publish untested code
+    runs-on: ubuntu-latest
+    # contents:write to create the release; id-token:write to mint the OIDC
+    # token that actions/attest-build-provenance needs. Both are job-level
+    # because GitHub Actions only accepts `permissions` at job/workflow scope.
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: true
+
+      # CGO_ENABLED=0: pure-Go build, so a binary produced on ubuntu-latest runs
+      # identically on the user's OS and is much smaller.
+      - name: Build
         env:
-          GOOS: windows
-          GOARCH: amd64
-        run: go build -o zensec-windows-amd64.exe ./cmd/zensec/...
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 go build -v -o dist/zensec-windows-amd64.exe ./cmd/zensec
+          GOOS=linux   GOARCH=amd64 go build -v -o dist/zensec-linux-amd64   ./cmd/zensec
+          GOOS=darwin  GOARCH=arm64 go build -v -o dist/zensec-darwin-arm64  ./cmd/zensec
 
-      - name: Build Linux
-        env:
-          GOOS: linux
-          GOARCH: amd64
-        run: go build -o zensec-linux-amd64 ./cmd/zensec/...
+      - name: Generate checksums
+        run: |
+          cd dist
+          # Binaries are listed explicitly rather than via `zensec-*`: a glob would
+          # also match a leftover SHA256SUMS.txt on a re-run and hash the file
+          # into itself.
+          sha256sum zensec-windows-amd64.exe \
+                    zensec-linux-amd64 \
+                    zensec-darwin-arm64 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
-      - name: Build macOS
-        env:
-          GOOS: darwin
-          GOARCH: arm64
-        run: go build -o zensec-darwin-arm64 ./cmd/zensec/...
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dist/*'
 
-      - name: Create Release
+      # TODO: add cosign signing + an SBOM before public distribution.
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            zensec-windows-amd64.exe
-            zensec-linux-amd64
-            zensec-darwin-arm64
-          generate_release_notes: true
+            dist/zensec-windows-amd64.exe
+            dist/zensec-linux-amd64
+            dist/zensec-darwin-arm64
+            dist/SHA256SUMS.txt
+          # Auto-generated notes are deliberately OFF. release_notes.txt in the
+          # repo root is a hand-written file for the last release; GitHub's
+          # generated notes would duplicate/conflict with that curated style.
+          # TODO: retire release_notes.txt and switch to auto-generated notes.
+          generate_release_notes: false

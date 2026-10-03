@@ -1,0 +1,19 @@
+# Normalise line endings in the repository so that a Windows checkout with
+# core.autocrlf=true cannot produce a phantom `git diff` on go.mod / go.sum.
+# Without this the "dependency drift" CI gate fails intermittently for
+# contributors on Windows for reasons that have nothing to do with dependencies.
+* text=auto eol=lf
+
+# Windows-only tooling that must keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets that must never be line-ending translated.
+*.enc binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.png binary
+*.jpg binary
+*.pdf binary

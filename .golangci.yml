@@ -1,0 +1,55 @@
+# golangci-lint configuration.
+#
+# Version 2 schema. The linter binary must be new enough to read the export
+# data of the Go toolchain in use: golangci-lint v2.1 fails with
+# "export data version 4 is greater than maximum supported version 2" against
+# Go 1.27, so the workflow pins a recent minor instead of a floating major.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gosec     # relevant for a file encryption tool
+    - misspell
+    - bodyclose
+  settings:
+    gosec:
+      # G104: duplicate of errcheck, and it fires on the same benign writes.
+      excludes:
+        - G104
+      # G304/G306 are handled by the file mode constant and the atomic writer
+      # rather than by per-call nolint comments, so the generic "file
+      # inclusion via variable" reports are noise here.
+    errcheck:
+      # Writing to stdout/stderr cannot be usefully recovered from in a CLI,
+      # and Close on a read handle has no meaningful failure mode to report.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fscanln
+        - (*os.File).Close
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+    rules:
+      # Test fixtures deliberately use fixed modes and unchecked setup calls;
+      # a failure there surfaces as a test failure, not a lint.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # The atomic writer renames a temp file into place. gosec's file
+      # inclusion rule cannot see that the path is intentional here.
+      - path: internal/crypto/crypto\.go
+        linters:
+          - gosec
+        text: "Potential file inclusion via variable"
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax

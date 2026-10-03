@@ -1,18 +1,60 @@
 Windows Registry Editor Version 5.00
 
-; Note: For these context menus to work, 'zensec.exe' must be in your system's PATH environment variable.
-; For example, you can copy 'zensec.exe' to C:\Windows\System32 or any other directory in PATH.
+; ===================================================================
+;  ZenSec context menu installer
+; ===================================================================
+;  HOW TO USE: right-click this file -> "Install", or run it elevated:
+;      reg import install_context_menu.reg
+;
+;  TWO REAL LIMITATIONS
+;  --------------------
+;  (a) 'zensec.exe' must be reachable on PATH. The verbs call the bare
+;      executable name, so if it is not on PATH Explorer reports
+;      "Windows cannot find 'zensec.exe'". Copy it to a PATH directory or
+;      edit the two command lines below to use a full path such as
+;      "C:\Program Files\ZenSec\zensec.exe".
+;  (b) These keys live under HKEY_CLASSES_ROOT\*\shell, which is the
+;      merged HKCR view. Editing them affects EVERY user on the machine,
+;      and HKCR/HKLM writes need Administrator rights. Import this
+;      elevated; to remove the entries, delete the ZenSecEncrypt and
+;      ZenSecDecrypt keys.
+;
+;  WHY NO 'cmd.exe /c' WRAPPER
+;  --------------------------
+;  The previous version wrapped the call in cmd.exe /c "... \"%1\" ...",
+;  which is broken: cmd.exe has no backslash escaping, so the literal
+;  \" leaked through as part of the filename and every path with a
+;  space failed. The shell passes %1 straight to CreateProcess, so the
+;  binary can be invoked directly and the path needs no escaping at all.
+;  This is also what makes filenames containing & ( ) % work: they are
+;  handed to the process as a single argv entry and never re-parsed by
+;  a command interpreter.
+;  Trade-off accepted: without cmd.exe there is no 'pause', so the
+;  console window closes as soon as ZenSec exits and the user does not
+;  see the success/failure output. Double-click the file in an open
+;  terminal instead when you need the output.
+;
+;  NO -keyfile VARIANT: password prompting through the terminal is the
+;  intended behaviour here.
+;
+;  NO -yes FLAG: in an interactive right-click the user should get the
+;  "File already exists. Overwrite? [y/N]" prompt.
+;
+;  Escaping rule for .reg string values: only the double quote needs to
+;  be written as \". Backslashes in paths are literal, so write C:\dir
+;  and not C:\\dir.
+; ===================================================================
 
 [HKEY_CLASSES_ROOT\*\shell\ZenSecEncrypt]
 @="Encrypt with ZenSec"
-"Icon"="cmd.exe"
+"Icon"="zensec.exe"
 
 [HKEY_CLASSES_ROOT\*\shell\ZenSecEncrypt\command]
-@="cmd.exe /c \"zensec.exe -encrypt -file \\\"%1\\\" & pause\""
+@="\"zensec.exe\" -encrypt -file \"%1\""
 
 [HKEY_CLASSES_ROOT\*\shell\ZenSecDecrypt]
 @="Decrypt with ZenSec"
-"Icon"="cmd.exe"
+"Icon"="zensec.exe"
 
 [HKEY_CLASSES_ROOT\*\shell\ZenSecDecrypt\command]
-@="cmd.exe /c \"zensec.exe -decrypt -file \\\"%1\\\" & pause\""
+@="\"zensec.exe\" -decrypt -file \"%1\""
